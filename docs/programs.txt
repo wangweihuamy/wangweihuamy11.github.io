@@ -74,8 +74,8 @@ Nutz框架/mysql/git/maven/intellij idea/swagger
 
 
 好车e贷(商户版)APP后端系统
-maven/log4j/nutz/mysql/swagger/
-	手机快速登录
+maven/log4j/nutz/mysql/swagger/git/intellij idea	
+手机快速登录
 	账号密码快速登录
 	个人中心
 		经销商管理员身份
