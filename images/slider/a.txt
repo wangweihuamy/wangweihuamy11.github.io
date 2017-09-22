@@ -1,0 +1,450 @@
+package com.serviceapp.serviceapp;
+
+import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.View;
+import android.widget.Button;
+import com.serviceapp.serviceapp.service.DownloadService;
+
+
+public class MainActivity extends Activity implements View.OnClickListener {
+
+    private DownloadService.DownloadBinder downloadBinder;
+    private ServiceConnection connection=new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
+            downloadBinder=(DownloadService.DownloadBinder)iBinder;
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName componentName) {
+
+        }
+    };
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        Button startDownload=(Button)findViewById(R.id.start_download);
+        Button pauseDownload=(Button)findViewById(R.id.pause_download);
+        Button cancelDownload=(Button)findViewById(R.id.cancel_download);
+        startDownload.setOnClickListener(this);
+        pauseDownload.setOnClickListener(this);
+        cancelDownload.setOnClickListener(this);
+        Intent intent = new Intent(this,DownloadService.class);
+        startService(intent);//启动服务
+        bindService(intent,connection,BIND_AUTO_CREATE);//绑定服务
+//        if (ContextCompat)
+
+
+    }
+
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        // Inflate the menu; this adds items to the action bar if it is present.
+        getMenuInflater().inflate(R.menu.menu_main, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        // Handle action bar item clicks here. The action bar will
+        // automatically handle clicks on the Home/Up button, so long
+        // as you specify a parent activity in AndroidManifest.xml.
+        int id = item.getItemId();
+
+        //noinspection SimplifiableIfStatement
+        if (id == R.id.action_settings) {
+            return true;
+        }
+
+        return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    public void onClick(View view) {
+
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+package com.serviceapp.serviceapp;
+
+import android.os.AsyncTask;
+import android.os.Environment;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+
+import java.io.File;
+import java.io.InputStream;
+import java.io.RandomAccessFile;
+
+/**
+ * Created by user on 2017/9/22.
+ */
+public class DownloadTask extends AsyncTask<String,Integer,Integer> {
+
+    public static final int TYPE_SUCCESS=0;
+    public static final int TYPE_FAILED=1;
+    public static final int TYPE_PAUSED=2;
+    public static final int TYPE_CANCELED=3;
+
+    private DownloadListener listener;
+    private boolean isCanceled=false;
+    private boolean isPaused=false;
+    private int lastProgress;
+
+    public DownloadTask(DownloadListener listener){
+        this.listener=listener;
+    }
+
+
+    @Override
+    protected Integer doInBackground(String... params) {
+        InputStream is=null;
+        RandomAccessFile saveFile=null;
+        File file=null;
+        try {
+            long downloadedLength=0;
+            String downloadUrl=params[0];
+            String fileName=downloadUrl.substring(downloadUrl.lastIndexOf("/"));
+            String directory= Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getPath();
+            file=new File(directory+fileName);
+            if (file.exists()){
+                downloadedLength=file.length();
+            }
+            long contentLength=getContentLength(downloadUrl);
+            if (contentLength==0){
+                return  TYPE_FAILED;
+            }else if (contentLength==downloadedLength){
+                //已下载字节和文件总字节相等，说明已经下载完成了
+                return TYPE_SUCCESS;
+            }
+            OkHttpClient client=new OkHttpClient();
+            Request request=new Request.Builder().addHeader("RANGE","bytes="+downloadedLength+"-").url(downloadUrl).build();
+            Response response=client.newCall(request).execute();
+            if (response!=null){
+                is=response.body().byteStream();
+                saveFile = new RandomAccessFile(file,"rw");
+                saveFile.seek(downloadedLength);
+                byte[] b =new byte[1024];
+                int total=0;
+                int len;
+                while ((len=is.read(b))!=-1){
+                    if (isCanceled){
+                        return TYPE_CANCELED;
+                    }else if (isPaused){
+                        return TYPE_PAUSED;
+                    }else {
+                        total+=len;
+                        saveFile.write(b,0,len);
+                        //计算已经下载的百分比
+                        int progress=(int)((total+downloadedLength)*100/contentLength);
+                        publishProgress(progress);
+                    }
+                }
+                response.body().close();
+                return TYPE_SUCCESS;
+            }
+
+        }catch (Exception e){
+            e.printStackTrace();
+        }finally {
+            try {
+                if (is!=null){
+                    is.close();
+                }
+                if (saveFile!=null){
+                    saveFile.close();
+                }
+                if (isCanceled&&file!=null){
+                    file.delete();
+                }
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+        }
+
+        return TYPE_FAILED;
+    }
+
+
+    @Override
+    protected void onProgressUpdate(Integer ...values){
+        int progress=values[0];
+        if (progress>lastProgress){
+            listener.onProgress(progress);
+            lastProgress=progress;
+        }
+    }
+
+    @Override
+    protected void onPostExecute(Integer status){
+        switch (status){
+            case TYPE_SUCCESS:
+                listener.onSuccess();
+                break;
+            case TYPE_FAILED:
+                listener.onFailed();
+                break;
+            case TYPE_PAUSED:
+                listener.onPaused();
+                break;
+            case TYPE_CANCELED:
+                listener.onCanceled();
+                break;
+            default:
+                break;
+        }
+    }
+
+    public void pauseDownload(){
+        isPaused=true;
+    }
+
+    public void cancelDownload(){
+        isCanceled=true;
+    }
+
+    private long getContentLength(String downloadUrl) throws Exception{
+        OkHttpClient client=new OkHttpClient();
+        Request request =new Request.Builder().url(downloadUrl).build();
+        Response response=client.newCall(request).execute();
+        if (response!=null&response.isSuccessful()){
+            long contentLength=response.body().contentLength();
+            return contentLength;
+        }
+        return 0;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+package com.serviceapp.serviceapp.service;
+
+import android.app.Notification;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Intent;
+import android.os.Binder;
+import android.os.Environment;
+import android.os.IBinder;
+import android.widget.Toast;
+import com.serviceapp.serviceapp.DownloadListener;
+import com.serviceapp.serviceapp.DownloadTask;
+import com.serviceapp.serviceapp.MainActivity;
+
+import java.io.File;
+
+public class DownloadService extends Service {
+    private DownloadTask downloadTask;
+    private String downloadUrl;
+
+    private DownloadListener listener=new DownloadListener() {
+        @Override
+        public void onProgress(int progress) {
+            getNotificationManager().notify(1,getNotification("下载中...",progress));
+        }
+
+        @Override
+        public void onSuccess() {
+            downloadTask=null;
+            //下载成功时将前台服务通知关闭，并创建一个下载成功的通知
+            stopForeground(true);
+            getNotificationManager().notify(1, getNotification("下载成功", -1));
+            Toast.makeText(DownloadService.this,"下载成功",Toast.LENGTH_SHORT).show();
+        }
+
+        @Override
+        public void onFailed() {
+            downloadTask=null;
+            //下载失败时将前台服务通知关闭，并创建一个下载失败的通知
+            stopForeground(true);
+            Toast.makeText(DownloadService.this,"下载失败",Toast.LENGTH_SHORT).show();
+        }
+
+        @Override
+        public void onPaused() {
+            downloadTask=null;
+            Toast.makeText(DownloadService.this,"暂停",Toast.LENGTH_SHORT).show();
+        }
+
+        @Override
+        public void onCanceled() {
+            downloadTask=null;
+            //下载失败时将前台服务通知关闭，并创建一个下载失败的通知
+            stopForeground(true);
+            Toast.makeText(DownloadService.this,"取消",Toast.LENGTH_SHORT).show();
+        }
+    };
+
+    private DownloadBinder mBinder=new DownloadBinder();
+
+    @Override
+    public IBinder onBind(Intent intent) {
+        return mBinder;
+    }
+
+    public class DownloadBinder extends Binder{
+        public void startDownload(String url){
+            if (downloadTask==null){
+                downloadUrl=url;
+                downloadTask=new DownloadTask(listener);
+                downloadTask.execute(downloadUrl);
+                startForeground(1,getNotification("正在下载...", 0));
+                Toast.makeText(DownloadService.this,"正在下载...",Toast.LENGTH_SHORT).show();
+            }
+        }
+
+        public void pauseDownload(){
+            if (downloadTask!=null){
+                downloadTask.pauseDownload();
+            }
+
+        }
+
+        public void cancelDownload(){
+            if (downloadTask!=null){
+                downloadTask.cancelDownload();
+            }else{
+                if (downloadUrl!=null){
+                    //取消下载是需将文件删除，并将通知关闭
+                    String fileName=downloadUrl.substring(downloadUrl.lastIndexOf("/"));
+                    String directory= Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getPath();
+                    File file=new File(directory+fileName);
+                    if (file.exists()){
+                        file.delete();
+                    }
+                    getNotificationManager().cancel(1);
+                    stopForeground(true);
+                    Toast.makeText(DownloadService.this,"Canceled",Toast.LENGTH_SHORT).show();
+                }
+            }
+        }
+    }
+
+
+
+    private NotificationManager getNotificationManager(){
+        return (NotificationManager)getSystemService(NOTIFICATION_SERVICE);
+    }
+
+    private Notification getNotification(String title,int progress){
+
+        Intent intent=new Intent(this, MainActivity.class);
+        PendingIntent pi=PendingIntent.getActivity(this,0,intent,0);
+//        NotificationCompat.Builder builder=new NotificationCompat.Builder(this);
+//        builder.setSmallIcon(android.R.mipmap.sym_def_app_icon);
+//        builder.setLargeIcon(BitmapFactory.decodeResource(getResources(),android.R.mipmap.sym_def_app_icon));
+//        builder.setContentIntent(pi);
+//        builder.setContentTitle(title);
+//        if (progress>0){
+//            //当progress大于0时才显示现在进度
+//            builder.setContentText(progress+"%");
+//            builder.setProgress(100,progress,false);
+//        }
+//
+//        // TODO
+//        return builder.build();
+        return null;
+    }
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:orientation="vertical"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+
+    <Button
+            android:id="@+id/start_download"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="开始下载"
+            />
+    <Button
+            android:id="@+id/pause_download"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="暂停下载"
+            />
+    <Button
+            android:id="@+id/cancel_download"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="取消下载"
+            />
+
+</LinearLayout>
+
+
+
+
+
+
+package com.serviceapp.serviceapp;
+
+/**
+ * Created by user on 2017/9/22.
+ */
+public interface DownloadListener {
+    public void onProgress(int progress);
+    public void onSuccess();
+    public void onFailed();
+    public void onPaused();
+    public void onCanceled();
+}
